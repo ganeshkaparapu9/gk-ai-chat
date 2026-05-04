@@ -15,6 +15,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "AI Chat — Powered by Llama 3.1",
   description: "Chat with an AI assistant powered by Llama 3.1 via NVIDIA",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export default function RootLayout({
