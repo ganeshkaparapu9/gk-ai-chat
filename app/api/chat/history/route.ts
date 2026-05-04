@@ -1,6 +1,11 @@
 // app/api/chat/history/route.ts
-import { kv } from '@vercel/kv';
+import { Redis } from '@upstash/redis';
 import { NextRequest, NextResponse } from 'next/server';
+
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL!,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+});
 
 const KV_KEY = 'chat:conversations';
 const TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days
@@ -10,15 +15,15 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const sync = searchParams.get('sync') === 'true';
 
-    // Check if KV is available
-    if (!kv) {
+    // Check if Redis is available
+    if (!redis) {
       return NextResponse.json(
-        { message: 'KV not available', conversations: [] },
+        { message: 'Redis not available', conversations: [] },
         { status: 200 }
       );
     }
 
-    const conversations = await kv.get(KV_KEY);
+    const conversations = await redis.get(KV_KEY);
     
     if (!conversations) {
       return NextResponse.json({ conversations: [] });
@@ -36,16 +41,16 @@ export async function POST(request: NextRequest) {
   try {
     const conversations = await request.json();
 
-    // Check if KV is available
-    if (!kv) {
+    // Check if Redis is available
+    if (!redis) {
       return NextResponse.json(
-        { message: 'KV not available' },
+        { message: 'Redis not available' },
         { status: 200 }
       );
     }
 
-    // Save to KV with TTL
-    await kv.setex(KV_KEY, TTL_SECONDS, JSON.stringify(conversations));
+    // Save to Redis with TTL
+    await redis.setex(KV_KEY, TTL_SECONDS, JSON.stringify(conversations));
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -59,15 +64,15 @@ export async function PUT(request: NextRequest) {
   try {
     const { conversationId, name } = await request.json();
 
-    // Check if KV is available
-    if (!kv) {
+    // Check if Redis is available
+    if (!redis) {
       return NextResponse.json(
-        { message: 'KV not available' },
+        { message: 'Redis not available' },
         { status: 200 }
       );
     }
 
-    const conversations = await kv.get(KV_KEY);
+    const conversations = await redis.get(KV_KEY);
     if (!conversations) {
       return NextResponse.json({ success: false }, { status: 404 });
     }
@@ -76,7 +81,7 @@ export async function PUT(request: NextRequest) {
       conv.id === conversationId ? { ...conv, name } : conv
     );
 
-    await kv.setex(KV_KEY, TTL_SECONDS, JSON.stringify(updated));
+    await redis.setex(KV_KEY, TTL_SECONDS, JSON.stringify(updated));
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -97,19 +102,19 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // Check if KV is available
-    if (!kv) {
+    // Check if Redis is available
+    if (!redis) {
       return NextResponse.json({ success: true }, { status: 200 });
     }
 
-    const conversations = await kv.get(KV_KEY);
+    const conversations = await redis.get(KV_KEY);
     if (!conversations) {
       return NextResponse.json({ success: false }, { status: 404 });
     }
 
     const filtered = (conversations as any[]).filter(c => c.id !== conversationId);
 
-    await kv.setex(KV_KEY, TTL_SECONDS, JSON.stringify(filtered));
+    await redis.setex(KV_KEY, TTL_SECONDS, JSON.stringify(filtered));
 
     return NextResponse.json({ success: true });
   } catch (error) {
