@@ -42,16 +42,18 @@ export function useChatHistory() {
           
           setConversations(valid);
           
-          // Try to load from Vercel KV if deployed
+          // Try to load from Redis if deployed
           if (valid.length > 0 && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
             try {
               const syncResponse = await fetch('/api/chat/history?sync=true');
               if (syncResponse.ok) {
-                const kvConversations = await syncResponse.json();
-                setConversations(kvConversations);
+                const data = await syncResponse.json();
+                if (data.conversations && Array.isArray(data.conversations)) {
+                  setConversations(data.conversations);
+                }
               }
             } catch (err) {
-              console.warn('Failed to sync with KV, using localStorage', err);
+              console.warn('Failed to sync with Redis, using localStorage', err);
             }
           }
         }

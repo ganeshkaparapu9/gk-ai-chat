@@ -5,23 +5,46 @@ import { NextRequest, NextResponse } from 'next/server';
 const KV_KEY = 'chat:conversations';
 const TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days
 
-// Initialize Redis client
-const redis = Redis.fromEnv();
+// Initialize Redis lazily to ensure env vars are available
+let redis: Redis | null = null;
+
+function getRedisClient(): Redis | null {
+  if (redis) return redis;
+
+  try {
+    const url = process.env.KV_REST_API_URL;
+    const token = process.env.KV_REST_API_TOKEN;
+
+    if (!url || !token) {
+      console.warn(
+        'Redis not configured. Set KV_REST_API_URL and KV_REST_API_TOKEN'
+      );
+      return null;
+    }
+
+    redis = new Redis({
+      url,
+      token,
+    });
+    return redis;
+  } catch (error) {
+    console.error('Failed to initialize Redis:', error);
+    return null;
+  }
+}
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const sync = searchParams.get('sync') === 'true';
+    const redisClient = getRedisClient();
 
-    // Check if Redis is available
-    if (!redis) {
+    if (!redisClient) {
       return NextResponse.json(
-        { message: 'Redis not available', conversations: [] },
+        { message: 'Redis not configured', conversations: [] },
         { status: 200 }
       );
     }
 
-    const conversations = await redis.get(KV_KEY);
+    const conversations = await redisClient.get(KV_KEY);
 
     if (!conversations) {
       return NextResponse.json({ conversations: [] });
@@ -30,7 +53,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ conversations });
   } catch (error) {
     console.error('Error fetching conversations:', error);
-    // Gracefully degrade - return empty list instead of error
     return NextResponse.json({ conversations: [] }, { status: 200 });
   }
 }
@@ -39,16 +61,16 @@ export async function POST(request: NextRequest) {
   try {
     const conversations = await request.json();
 
-    // Check if Redis is available
-    if (!redis) {
+    const redisClient = getRedisClient();
+
+    if (!redisClient) {
       return NextResponse.json(
-        { message: 'Redis not available' },
+        { message: 'Redis not configured', success: true },
         { status: 200 }
       );
     }
 
-    // Save to Redis with TTL
-    await redis.setex(KV_KEY, TTL_SECONDS, JSON.stringify(conversations));
+    await redisClient.setex(KV_KEY, TTL_SECONDS, JSON.stringify(conversations));
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -61,15 +83,16 @@ export async function PUT(request: NextRequest) {
   try {
     const { conversationId, name } = await request.json();
 
-    // Check if Redis is available
-    if (!redis) {
+    const redisClient = getRedisClient();
+
+    if (!redisClient) {
       return NextResponse.json(
-        { message: 'Redis not available' },
+        { message: 'Redis not configured' },
         { status: 200 }
       );
     }
 
-    const conversations = await redis.get(KV_KEY);
+    const conversations = await redisClient.get(KV_KEY);
     if (!conversations) {
       return NextResponse.json({ success: false }, { status: 404 });
     }
@@ -78,7 +101,7 @@ export async function PUT(request: NextRequest) {
       conv.id === conversationId ? { ...conv, name } : conv
     );
 
-    await redis.setex(KV_KEY, TTL_SECONDS, JSON.stringify(updated));
+    await redisClient.setex(KV_KEY, TTL_SECONDS, JSON.stringify(updated));
 
     return NextResponse.json({ success: true });
   } catch (error) {
@@ -99,19 +122,20 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // Check if Redis is available
-    if (!redis) {
+    const redisClient = getRedisClient();
+
+    if (!redisClient) {
       return NextResponse.json({ success: true }, { status: 200 });
     }
 
-    const conversations = await redis.get(KV_KEY);
+    const conversations = await redisClient.get(KV_KEY);
     if (!conversations) {
       return NextResponse.json({ success: false }, { status: 404 });
     }
 
     const filtered = (conversations as any[]).filter(c => c.id !== conversationId);
 
-    await redis.setex(KV_KEY, TTL_SECONDS, JSON.stringify(filtered));
+    await redisClient.setex(KV_KEY, TTL_SECONDS, JSON.stringify(filtered));
 
     return NextResponse.json({ success: true });
   } catch (error) {
