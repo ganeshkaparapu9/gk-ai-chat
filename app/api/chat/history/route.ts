@@ -2,13 +2,11 @@
 import { Redis } from '@upstash/redis';
 import { NextRequest, NextResponse } from 'next/server';
 
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL!,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-});
-
 const KV_KEY = 'chat:conversations';
 const TTL_SECONDS = 3 * 24 * 60 * 60; // 3 days
+
+// Initialize Redis client
+const redis = Redis.fromEnv();
 
 export async function GET(request: NextRequest) {
   try {
@@ -24,7 +22,7 @@ export async function GET(request: NextRequest) {
     }
 
     const conversations = await redis.get(KV_KEY);
-    
+
     if (!conversations) {
       return NextResponse.json({ conversations: [] });
     }
@@ -55,7 +53,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error saving conversations:', error);
-    // Gracefully degrade - don't fail if KV is unavailable
     return NextResponse.json({ success: true }, { status: 200 });
   }
 }
