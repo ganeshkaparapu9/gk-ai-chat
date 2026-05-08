@@ -45,7 +45,8 @@ export default function IngestPage() {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const pageText = content.items
-        .map((item: { str?: string }) => ('str' in item ? item.str : ''))
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((item: any) => (item.str ? item.str : ''))
         .join(' ');
       pages.push(pageText);
     }

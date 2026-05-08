@@ -53,7 +53,7 @@ async function retrieveContext(query: string, topK = 3): Promise<string[]> {
 
     const rows = await sql`SELECT text FROM documents ORDER BY embedding <=> ${queryVector}::vector LIMIT ${topK}`;
 
-    return rows.map((row: { text: string }) => row.text);
+    return rows.map((row) => row.text as string);
   } catch (error) {
     // If the table doesn't exist yet or any DB error, just skip RAG
     console.warn('RAG retrieval failed (table may not exist yet):', error);
