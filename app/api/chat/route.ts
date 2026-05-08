@@ -1,6 +1,7 @@
 // app/api/chat/route.ts
 import { createOpenAI } from '@ai-sdk/openai';
 import { streamText } from 'ai';
+import { neon } from '@neondatabase/serverless';
 
 // Initialize the provider pointing to NVIDIA instead of OpenAI
 const nvidia = createOpenAI({
@@ -8,8 +9,57 @@ const nvidia = createOpenAI({
   apiKey: process.env.NVIDIA_API_KEY,
 });
 
-// Allow streaming responses up to 30 seconds
+// Initialize Neon connection
+const sql = neon(process.env.DATABASE_URL!);
+
+// NVIDIA embedding endpoint
+const NVIDIA_EMBED_URL = 'https://integrate.api.nvidia.com/v1/embeddings';
+const EMBED_MODEL = 'nvidia/nv-embedqa-e5-v5';
+
+// Allow streaming responses up to 60 seconds
 export const maxDuration = 60;
+
+// Generate a single embedding for the user's query
+async function getQueryEmbedding(text: string): Promise<number[]> {
+  const response = await fetch(NVIDIA_EMBED_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: EMBED_MODEL,
+      input: [text],
+      input_type: 'query',
+      encoding_format: 'float',
+      truncate: 'END',
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`NVIDIA embedding API error (${response.status}): ${errorBody}`);
+  }
+
+  const data = await response.json();
+  return data.data[0].embedding;
+}
+
+// Retrieve the top-K most relevant document chunks
+async function retrieveContext(query: string, topK = 3): Promise<string[]> {
+  try {
+    const questionEmbedding = await getQueryEmbedding(query);
+    const queryVector = '[' + questionEmbedding.join(',') + ']';
+
+    const rows = await sql`SELECT text FROM documents ORDER BY embedding <=> ${queryVector}::vector LIMIT ${topK}`;
+
+    return rows.map((row: { text: string }) => row.text);
+  } catch (error) {
+    // If the table doesn't exist yet or any DB error, just skip RAG
+    console.warn('RAG retrieval failed (table may not exist yet):', error);
+    return [];
+  }
+}
 
 export async function POST(req: Request) {
   try {
@@ -23,13 +73,28 @@ export async function POST(req: Request) {
       );
     }
 
+    // Extract the latest user message for RAG retrieval
+    const lastUserMessage = [...messages].reverse().find(
+      (m: { role: string }) => m.role === 'user'
+    );
+
+    // Retrieve relevant context from the vector store
+    let contextBlock = '';
+    if (lastUserMessage) {
+      const relevantChunks = await retrieveContext(lastUserMessage.content);
+      if (relevantChunks.length > 0) {
+        contextBlock = `\n\nRelevant context from uploaded documents:\n---\n${relevantChunks.join('\n\n')}\n---\nUse the above context to inform your answer when relevant. If the context doesn't relate to the question, ignore it.`;
+      }
+    }
+
+    const systemPrompt = `You are a highly capable AI assistant. Keep all responses concise, direct, and under 3 sentences unless explicitly asked for more detail.${contextBlock}`;
+
     const result = await streamText({
       // Specify the exact model string from the NVIDIA Build portal
       model: nvidia.chat('meta/llama-3.1-8b-instruct'),
       // Use messages directly - they're already in { role, content } format
       messages: messages as { role: 'user' | 'assistant'; content: string }[],
-      // Optional: Adjust temperature for creativity (0.0 to 1.0)
-      system: 'You are a highly capable AI assistant. Keep all responses concise, direct, and under 3 sentences unless explicitly asked for more detail.',
+      system: systemPrompt,
       temperature: 0.7,
     });
 
