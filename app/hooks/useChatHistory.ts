@@ -125,6 +125,7 @@ export function useChatHistory() {
       expiresAt: now + threeDaysMs,
     };
     setConversations(prev => [newConv, ...prev]);
+    setActiveConversationId(id);
     return id;
   }, []);
 
