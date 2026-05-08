@@ -244,18 +244,9 @@ export default function Chat() {
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n').filter(line => line.trim());
-
-        for (const line of lines) {
-          if (line.startsWith('d: ')) {
-            const data = JSON.parse(line.slice(3));
-            if (data.type === 'text-delta' && data.delta) {
-              fullResponse += data.delta;
-              setStreamingResponse(fullResponse);
-            }
-          }
-        }
+        const chunk = decoder.decode(value, { stream: true });
+        fullResponse += chunk;
+        setStreamingResponse(fullResponse);
       }
 
       // Add AI response to history
