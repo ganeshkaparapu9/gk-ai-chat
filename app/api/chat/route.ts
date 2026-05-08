@@ -45,9 +45,20 @@ async function getQueryEmbedding(text: string): Promise<number[]> {
   return data.data[0].embedding;
 }
 
-// Retrieve the top-K most relevant document chunks
+// Retrieve the top-K most relevant document chunks (with timeout)
 async function retrieveContext(query: string, topK = 3): Promise<string[]> {
+  // Race against a 5-second timeout so chat stays responsive
+  const timeoutMs = 5000;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
+    // Quick check: does the documents table exist?
+    const tableCheck = await sql`SELECT EXISTS (
+      SELECT FROM information_schema.tables WHERE table_name = 'documents'
+    )`;
+    if (!tableCheck[0]?.exists) return [];
+
     const questionEmbedding = await getQueryEmbedding(query);
     const queryVector = '[' + questionEmbedding.join(',') + ']';
 
@@ -55,9 +66,11 @@ async function retrieveContext(query: string, topK = 3): Promise<string[]> {
 
     return rows.map((row) => row.text as string);
   } catch (error) {
-    // If the table doesn't exist yet or any DB error, just skip RAG
-    console.warn('RAG retrieval failed (table may not exist yet):', error);
+    // If the table doesn't exist yet, DB error, or timeout — just skip RAG
+    console.warn('RAG retrieval skipped:', error instanceof Error ? error.message : error);
     return [];
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
