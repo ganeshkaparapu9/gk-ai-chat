@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
+import { useUser } from '@clerk/nextjs';
 
 export type Message = {
   id: string;
@@ -19,31 +20,30 @@ const STORAGE_KEY = 'chatConversations';
 const ACTIVE_CONV_KEY = 'activeConversationId';
 
 export function useChatHistory() {
+  const { isSignedIn } = useUser();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Initialize from localStorage
   useEffect(() => {
     const loadFromStorage = async () => {
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
         const activeId = localStorage.getItem(ACTIVE_CONV_KEY);
-        
+
         if (stored) {
           const parsed: Conversation[] = JSON.parse(stored);
-          // Filter out expired conversations
           const now = Date.now();
           const valid = parsed.filter(conv => conv.expiresAt > now);
-          
+
           if (valid.length !== parsed.length) {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(valid));
           }
-          
+
           setConversations(valid);
-          
-          // Try to load from Redis if deployed
-          if (valid.length > 0 && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
+
+          // Only sync with Redis when signed in
+          if (isSignedIn && valid.length > 0 && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
             try {
               const syncResponse = await fetch('/api/chat/history?sync=true');
               if (syncResponse.ok) {
@@ -57,7 +57,7 @@ export function useChatHistory() {
             }
           }
         }
-        
+
         if (activeId && stored) {
           const parsed: Conversation[] = JSON.parse(stored);
           if (parsed.some(c => c.id === activeId)) {
@@ -88,25 +88,24 @@ export function useChatHistory() {
     };
 
     loadFromStorage();
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSignedIn]);
 
-  // Save to localStorage and KV whenever conversations change
+  // Save to localStorage and optionally sync to Redis when signed in
   useEffect(() => {
     if (conversations.length > 0) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
-      
-      // Sync to KV if deployed
-      if (process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
+
+      if (isSignedIn && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
         fetch('/api/chat/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(conversations),
-        }).catch(err => console.warn('Failed to sync to KV:', err));
+        }).catch(err => console.warn('Failed to sync to Redis:', err));
       }
     }
-  }, [conversations]);
+  }, [conversations, isSignedIn]);
 
-  // Save active conversation ID to localStorage
   useEffect(() => {
     if (activeConversationId) {
       localStorage.setItem(ACTIVE_CONV_KEY, activeConversationId);
@@ -156,12 +155,14 @@ export function useChatHistory() {
   }, [activeConversationId]);
 
   const renameConversation = useCallback((conversationId: string, newName: string) => {
+    if (!isSignedIn) return;
     setConversations(prev =>
       prev.map(conv => (conv.id === conversationId ? { ...conv, name: newName } : conv))
     );
-  }, []);
+  }, [isSignedIn]);
 
   const deleteConversation = useCallback((conversationId: string) => {
+    if (!isSignedIn) return;
     setConversations(prev => prev.filter(c => c.id !== conversationId));
     if (activeConversationId === conversationId) {
       const remaining = conversations.filter(c => c.id !== conversationId);
@@ -172,7 +173,7 @@ export function useChatHistory() {
         setActiveConversationId(newId);
       }
     }
-  }, [activeConversationId, conversations, createNewConversation]);
+  }, [isSignedIn, activeConversationId, conversations, createNewConversation]);
 
   const switchConversation = useCallback((conversationId: string) => {
     if (conversations.find(c => c.id === conversationId)) {

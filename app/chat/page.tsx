@@ -3,6 +3,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
+import { UserButton, useUser } from '@clerk/nextjs';
 import { useChatHistory, type Conversation } from '@/app/hooks/useChatHistory';
 
 function ThinkingIndicator() {
@@ -163,6 +164,8 @@ function ConversationSidebar({
 }
 
 export default function Chat() {
+  const { user } = useUser();
+  const isAdmin = (user?.publicMetadata as { role?: string } | null)?.role === 'admin';
   const chatHistory = useChatHistory();
   const { conversations, activeConversation, isLoading, activeConversationId } = chatHistory;
   const [input, setInput] = useState('');
@@ -232,7 +235,11 @@ export default function Chat() {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to get response');
+        if (response.status === 429) throw new Error('Too many requests — please wait a moment.');
+        const errText = await response.text();
+        let errMsg = 'Failed to get response';
+        try { errMsg = JSON.parse(errText).error || errMsg; } catch { errMsg = errText || errMsg; }
+        throw new Error(errMsg);
       }
 
       const reader = response.body?.getReader();
@@ -264,8 +271,8 @@ export default function Chat() {
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
-      {/* Sidebar */}
-      {!isLoading && (
+      {/* Sidebar — only for signed-in users */}
+      {!isLoading && user && (
         <ConversationSidebar
           conversations={conversations}
           activeConversationId={activeConversationId}
@@ -303,18 +310,20 @@ export default function Chat() {
               ) : (
                 <div className="px-3 py-1.5 rounded-full bg-surface text-xs text-muted">{statusMessage}</div>
               )}
-              <Link
-                href="/ingest"
-                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full border border-border bg-surface text-xs font-medium text-foreground hover:border-emerald-500 hover:text-emerald-500 transition"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <polyline points="14 2 14 8 20 8" />
-                  <line x1="12" y1="18" x2="12" y2="12" />
-                  <line x1="9" y1="15" x2="15" y2="15" />
-                </svg>
-                Knowledge Base
-              </Link>
+              {isAdmin && (
+                <Link
+                  href="/ingest"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-full border border-border bg-surface text-xs font-medium text-foreground hover:border-emerald-500 hover:text-emerald-500 transition"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="12" y1="18" x2="12" y2="12" />
+                    <line x1="9" y1="15" x2="15" y2="15" />
+                  </svg>
+                  Knowledge Base
+                </Link>
+              )}
               <button
                 type="button"
                 onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
@@ -339,6 +348,7 @@ export default function Chat() {
                   </svg>
                 )}
               </button>
+              <UserButton />
             </div>
           </div>
         </header>
@@ -431,6 +441,14 @@ export default function Chat() {
             <div ref={messagesEndRef} />
           </div>
         </main>
+
+        {/* Sign-in nudge for guests */}
+        {!user && (
+          <div className="text-center py-2 text-xs text-muted border-t border-border bg-background/60">
+            <Link href="/sign-in" className="text-accent hover:underline">Sign in</Link>
+            {' '}to save your chat history across sessions
+          </div>
+        )}
 
         {/* Input Area */}
         <footer className="sticky bottom-0 bg-background/80 backdrop-blur-xl border-t border-border px-4 py-4">

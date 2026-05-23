@@ -2,10 +2,12 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { useUser } from '@clerk/nextjs';
 
 type IngestStatus = 'idle' | 'parsing' | 'ingesting' | 'success' | 'error';
 
 export default function IngestPage() {
+  const { user, isLoaded } = useUser();
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState('');
   const [status, setStatus] = useState<IngestStatus>('idle');
@@ -101,15 +103,31 @@ export default function IngestPage() {
         body: JSON.stringify({ text: text.trim() }),
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        throw new Error(data.error || 'Ingest failed');
+        if (response.status === 403) {
+          throw new Error('Access denied. Make sure your admin role is set and sign out then back in.');
+        }
+        if (response.status === 401) {
+          throw new Error('You must be signed in to ingest documents.');
+        }
+        if (response.status === 429) {
+          throw new Error('Too many requests. Please wait a moment and try again.');
+        }
+        const errText = await response.text();
+        let errMessage = 'Ingest failed';
+        try {
+          const errJson = JSON.parse(errText);
+          errMessage = errJson.error || errMessage;
+        } catch {
+          errMessage = errText || errMessage;
+        }
+        throw new Error(errMessage);
       }
 
+      const data = await response.json();
       setChunksInserted(data.chunksInserted);
       setStatus('success');
-      setStatusMessage(`Successfully ingested ${data.chunksInserted} chunks into the knowledge base.`);
+      setStatusMessage(`Successfully ingested ${data.chunksInserted} new chunks (${data.chunksSkipped ?? 0} duplicates skipped).`);
     } catch (err) {
       console.error('Ingest error:', err);
       setStatus('error');
@@ -151,6 +169,18 @@ export default function IngestPage() {
   }
 
   const isProcessing = status === 'parsing' || status === 'ingesting';
+
+  if (isLoaded && (user?.publicMetadata as { role?: string } | null)?.role !== 'admin') {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-lg font-semibold text-foreground mb-2">Access Denied</p>
+          <p className="text-sm text-muted mb-4">You don&apos;t have permission to access this page.</p>
+          <Link href="/chat" className="text-sm text-accent hover:underline">Back to chat</Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
