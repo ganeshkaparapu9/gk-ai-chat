@@ -128,7 +128,12 @@ export function useChatHistory() {
     if (conversations.length === 0) return;
 
     // localStorage acts as a fast local cache — never store passwords or tokens here
-    localStorage.setItem(storageKey(userId), JSON.stringify(conversations));
+    try {
+      localStorage.setItem(storageKey(userId), JSON.stringify(conversations));
+    } catch (err) {
+      // QuotaExceededError: storage is full — DB remains the source of truth, so this is non-fatal
+      console.warn('localStorage write failed (storage may be full):', err);
+    }
 
     // Only persist to DB when there is a confirmed signed-in user
     if (!isSignedIn || !userId) return;
@@ -192,13 +197,19 @@ export function useChatHistory() {
   }, [activeConversationId]);
 
   const renameConversation = useCallback((conversationId: string, newName: string) => {
+    if (!newName.trim()) return; // Reject blank names
     setConversations(prev =>
-      prev.map(conv => (conv.id === conversationId ? { ...conv, name: newName } : conv))
+      prev.map(conv => (conv.id === conversationId ? { ...conv, name: newName.trim() } : conv))
     );
   }, []);
 
   const deleteConversation = useCallback((conversationId: string) => {
     if (!isSignedIn) return;
+    if (!conversationId?.trim()) return; // Reject empty/invalid IDs
+
+    // Guard: only proceed if the conversation actually exists in state
+    const exists = conversations.some(c => c.id === conversationId);
+    if (!exists) return;
 
     setConversations(prev => prev.filter(c => c.id !== conversationId));
 

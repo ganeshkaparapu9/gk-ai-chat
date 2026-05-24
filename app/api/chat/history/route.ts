@@ -133,15 +133,21 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Missing or invalid conversation id' }, { status: 400 });
     }
 
-    await sql`
+    // RETURNING lets us detect whether a row was actually deleted
+    const deleted = await sql`
       DELETE FROM chat_history
       WHERE user_id        = ${userId}
         AND conversation_id = ${conversationId}
+      RETURNING conversation_id
     `;
+
+    if (deleted.length === 0) {
+      return NextResponse.json({ error: 'Conversation not found' }, { status: 404 });
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error('Error deleting conversation:', error);
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ error: 'Failed to delete conversation' }, { status: 500 });
   }
 }
