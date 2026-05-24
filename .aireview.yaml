@@ -2,7 +2,7 @@
 # All fields are optional. Unset fields use the defaults shown below.
 
 # Primary AI model (NVIDIA NIM model ID)
-model: qwen/qwen2.5-coder-32b-instruct
+model: abacusai/dracarys-llama-3.1-70b-instruct
 
 
 # Secondary model for additional correctness checks (runs in parallel)
