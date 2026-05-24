@@ -6,6 +6,7 @@ import { UserButton, useUser } from '@clerk/nextjs';
 import { useChat } from '@ai-sdk/react';
 import { TextStreamChatTransport, isTextUIPart } from 'ai';
 import type { TextUIPart, UIMessage } from 'ai';
+import ReactMarkdown from 'react-markdown';
 import { useChatHistory, type Conversation } from '@/app/hooks/useChatHistory';
 
 function ThinkingIndicator() {
@@ -419,8 +420,31 @@ export default function Chat() {
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-xs font-medium text-accent">AI Assistant</span>
                         </div>
-                        <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                          {text}
+                        <div className="prose-ai text-sm leading-relaxed text-foreground/90">
+                          <ReactMarkdown
+                            components={{
+                              h1: ({ children }) => <h1 className="text-base font-bold mt-3 mb-1">{children}</h1>,
+                              h2: ({ children }) => <h2 className="text-sm font-bold mt-3 mb-1">{children}</h2>,
+                              h3: ({ children }) => <h3 className="text-sm font-semibold mt-2 mb-1">{children}</h3>,
+                              ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1.5 pl-1">{children}</ul>,
+                              ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1.5 pl-1">{children}</ol>,
+                              li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+                              p: ({ children }) => <p className="mb-1.5 last:mb-0">{children}</p>,
+                              code: ({ children, className }) => {
+                                const isBlock = className?.includes('language-');
+                                return isBlock ? (
+                                  <code className="block bg-black/30 rounded-md px-3 py-2 my-2 font-mono text-xs overflow-x-auto whitespace-pre">{children}</code>
+                                ) : (
+                                  <code className="bg-black/20 rounded px-1 py-0.5 font-mono text-xs">{children}</code>
+                                );
+                              },
+                              pre: ({ children }) => <pre className="my-0">{children}</pre>,
+                              strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+                              em: ({ children }) => <em className="italic">{children}</em>,
+                            }}
+                          >
+                            {text}
+                          </ReactMarkdown>
                           {showCursor && (
                             <span className="inline-block w-1.5 h-5 ml-0.5 bg-accent/50 animate-pulse" />
                           )}

@@ -139,21 +139,27 @@ export function useChatHistory() {
   const addMessage = useCallback((role: 'user' | 'assistant', content: string) => {
     setConversations(prev =>
       prev.map(conv => {
-        if (conv.id === activeConversationId) {
-          return {
-            ...conv,
-            messages: [
-              ...conv.messages,
-              {
-                id: Date.now().toString(),
-                role,
-                content,
-                timestamp: Date.now(),
-              },
-            ],
-          };
-        }
-        return conv;
+        if (conv.id !== activeConversationId) return conv;
+
+        // Auto-name the conversation from the first user message
+        const isFirstUserMessage = role === 'user' && conv.messages.length === 0;
+        const autoName = isFirstUserMessage
+          ? (content.trim().length > 50 ? content.trim().slice(0, 50) + '…' : content.trim())
+          : conv.name;
+
+        return {
+          ...conv,
+          name: autoName,
+          messages: [
+            ...conv.messages,
+            {
+              id: Date.now().toString(),
+              role,
+              content,
+              timestamp: Date.now(),
+            },
+          ],
+        };
       })
     );
   }, [activeConversationId]);

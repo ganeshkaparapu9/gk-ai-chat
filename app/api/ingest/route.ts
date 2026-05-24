@@ -14,6 +14,7 @@ export const maxDuration = 60;
 
 const requestSchema = z.object({
   text: z.string().min(1).max(200_000),
+  sourceName: z.string().min(1).max(200).optional(),
 });
 
 let ratelimit: Ratelimit | null = null;
@@ -27,6 +28,15 @@ function getRatelimit(): Ratelimit | null {
     });
   }
   return ratelimit;
+}
+
+function toSourceId(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100);
 }
 
 function chunkText(text: string, chunkSize = 500, overlap = 50): string[] {
@@ -75,7 +85,6 @@ export async function POST(req: Request) {
     const client = await clerkClient();
     const user = await client.users.getUser(userId);
     const role = (user.publicMetadata as { role?: string })?.role;
-    console.log('User role:', role);
     if (role !== 'admin') {
       return new Response('Forbidden', { status: 403 });
     }
@@ -97,25 +106,36 @@ export async function POST(req: Request) {
       );
     }
 
-    const { text } = parsed.data;
+    const { text, sourceName } = parsed.data;
 
+    // Migrate table — all safe to run repeatedly
     await sql`CREATE EXTENSION IF NOT EXISTS vector`;
     await sql`CREATE TABLE IF NOT EXISTS documents (
       id SERIAL PRIMARY KEY,
       text TEXT NOT NULL,
       embedding vector(1024)
     )`;
-    // Migrate existing table — safe to run repeatedly, skips if columns already exist
     await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)`;
     await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS ingested_by TEXT`;
     await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ DEFAULT NOW()`;
+    await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_id TEXT`;
+    await sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_name TEXT`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS documents_content_hash_idx ON documents(content_hash)`;
+    await sql`CREATE INDEX IF NOT EXISTS documents_source_id_idx ON documents(source_id)`;
+
+    // Derive a stable source identifier from the supplied name
+    const resolvedSourceName = sourceName?.trim() || 'Untitled Document';
+    const sourceId = toSourceId(resolvedSourceName);
+
+    // Delete all existing chunks for this source so re-ingestion replaces stale data
+    if (sourceId) {
+      await sql`DELETE FROM documents WHERE source_id = ${sourceId}`;
+    }
 
     const chunks = chunkText(text);
     const embeddings = await getEmbeddings(chunks);
 
     let inserted = 0;
-    let skipped = 0;
 
     for (let i = 0; i < chunks.length; i++) {
       const chunkContent = chunks[i];
@@ -123,22 +143,24 @@ export async function POST(req: Request) {
       const vector = embeddings[i];
       const embeddingString = '[' + vector.join(',') + ']';
 
-      const existing = await sql`SELECT id FROM documents WHERE content_hash = ${hash} LIMIT 1`;
-      if (existing.length > 0) {
-        skipped++;
-        continue;
-      }
-
-      await sql`INSERT INTO documents (text, embedding, content_hash, ingested_by)
-                VALUES (${chunkContent}, ${embeddingString}::vector, ${hash}, ${userId})`;
+      await sql`
+        INSERT INTO documents (text, embedding, content_hash, ingested_by, source_id, source_name)
+        VALUES (${chunkContent}, ${embeddingString}::vector, ${hash}, ${userId}, ${sourceId}, ${resolvedSourceName})
+        ON CONFLICT (content_hash) DO UPDATE
+          SET source_id   = EXCLUDED.source_id,
+              source_name = EXCLUDED.source_name,
+              ingested_by = EXCLUDED.ingested_by,
+              ingested_at = NOW()
+      `;
       inserted++;
     }
 
     return new Response(
       JSON.stringify({
         success: true,
+        sourceId,
+        sourceName: resolvedSourceName,
         chunksInserted: inserted,
-        chunksSkipped: skipped,
         totalChunks: chunks.length,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } }
