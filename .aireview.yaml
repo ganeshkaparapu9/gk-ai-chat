@@ -2,11 +2,12 @@
 # All fields are optional. Unset fields use the defaults shown below.
 
 # Primary AI model (NVIDIA NIM model ID)
-model: meta/llama-3.1-70b-instruct
+model: qwen/qwen2.5-coder-32b-instruct
+
 
 # Secondary model for additional correctness checks (runs in parallel)
 # Omit to skip second-model review
-second_model: qwen/qwen2.5-coder-32b-instruct
+#second_model: meta/llama-3.1-70b-instruct
 
 # Glob patterns for files to exclude from review
 skip_files:
