@@ -41,7 +41,7 @@ function ensureMigrated(): Promise<void> {
   return migrationPromise;
 }
 
-// GET — purge conversations older than 5 days, then return the rest for this user.
+// GET — purge conversations older than 5 days, then return the rest for this user
 export async function GET() {
   try {
     const { userId } = await auth();
