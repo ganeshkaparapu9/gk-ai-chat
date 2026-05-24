@@ -73,7 +73,7 @@ async function getQueryEmbedding(text: string): Promise<number[]> {
   return data.data[0].embedding;
 }
 
-async function retrieveContext(query: string, topK = 3): Promise<string[]> {
+async function retrieveContext(query: string, topK = 5): Promise<string[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
 
@@ -85,7 +85,7 @@ async function retrieveContext(query: string, topK = 3): Promise<string[]> {
 
     const questionEmbedding = await getQueryEmbedding(query);
     const queryVector = '[' + questionEmbedding.join(',') + ']';
-    const rows = await sql`SELECT text FROM documents ORDER BY embedding <=> ${queryVector}::vector LIMIT ${topK}`;
+    const rows = await sql`SELECT text FROM documents ORDER BY embedding <=> ${queryVector}::vector ASC, ingested_at DESC NULLS LAST LIMIT ${topK}`;
     return rows.map((row) => row.text as string);
   } catch (error) {
     console.warn('RAG retrieval skipped:', error instanceof Error ? error.message : error);
@@ -138,7 +138,7 @@ export async function POST(req: Request) {
       temperature: 0.7,
     });
 
-    return result.toUIMessageStreamResponse();
+    return result.toTextStreamResponse();
   } catch (error) {
     console.error('Chat API error:', error);
     return new Response(

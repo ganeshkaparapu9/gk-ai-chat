@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { UserButton, useUser } from '@clerk/nextjs';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport, isTextUIPart } from 'ai';
+import { TextStreamChatTransport, isTextUIPart } from 'ai';
 import type { TextUIPart, UIMessage } from 'ai';
 import { useChatHistory, type Conversation } from '@/app/hooks/useChatHistory';
 
@@ -179,7 +179,7 @@ export default function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const { messages, sendMessage, stop, status, setMessages, error, clearError } = useChat({
-    transport: new DefaultChatTransport({
+    transport: new TextStreamChatTransport({
       api: '/api/chat',
       prepareSendMessagesRequest: ({ messages: uiMessages }) => ({
         body: {
