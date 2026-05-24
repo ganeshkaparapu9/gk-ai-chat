@@ -26,7 +26,7 @@ async function migrate() {
   `;
 }
 
-// GET — purge data older than 5 days, then return this user's conversations, which make sure to keep less data on DB.
+// GET — purge data older than 5 days, then return this user's conversations.
 export async function GET() {
   try {
     const { userId } = await auth();
