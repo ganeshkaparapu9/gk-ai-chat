@@ -1,0 +1,35 @@
+# .aireview.yaml — place this file in the root of any repo you want to configure.
+# All fields are optional. Unset fields use the defaults shown below.
+
+# Primary AI model (NVIDIA NIM model ID)
+model: meta/llama-3.1-70b-instruct
+
+# Secondary model for additional correctness checks (runs in parallel)
+# Omit to skip second-model review
+second_model: qwen/qwen2.5-coder-32b-instruct
+
+# Glob patterns for files to exclude from review
+skip_files:
+  - "*.lock"
+  - "*.generated.*"
+  - "dist/**"
+  - "**/__snapshots__/**"
+  - "*.min.js"
+
+# Specific areas to emphasise (informational — passed to the AI as focus hints)
+focus_areas:
+  - security
+  - performance
+
+# Auto-approve threshold:
+#   never  — never auto-approve (always post COMMENT or REQUEST_CHANGES)
+#   low    — auto-approve if no critical issues (default: APPROVE)
+#   medium — auto-approve only if no critical issues AND no warnings
+#   high   — auto-approve only if no critical issues, warnings, or suggestions
+auto_approve_threshold: never
+
+# Set to false to disable inline line-level comments (fall back to a single summary comment)
+inline_comments: true
+
+# Maximum diff size (chars) before splitting into chunks (~10K tokens at 4 chars/token)
+max_diff_chars: 40000
