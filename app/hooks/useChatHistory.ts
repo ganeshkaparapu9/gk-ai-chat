@@ -72,19 +72,24 @@ export function useChatHistory() {
           setConversations(valid);
         }
 
-        // Signed-in users: fetch from DB (triggers 5-day cleanup server-side)
+        // Signed-in users: fetch from DB — this also triggers the 5-day cleanup server-side.
+        // Guests skip this entirely; their localStorage cache is their only storage.
         if (isSignedIn && userId) {
           try {
             const res = await fetch('/api/chat/history');
-            if (res.ok) {
+            if (!res.ok) {
+              console.warn(`Chat history fetch failed (${res.status}) — falling back to localStorage cache`);
+            } else {
               const data = await res.json();
               if (Array.isArray(data.conversations) && data.conversations.length > 0) {
                 valid = data.conversations as Conversation[];
                 setConversations(valid);
+                // Keep localStorage cache in sync with the authoritative DB result
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(valid));
               }
             }
           } catch (err) {
+            // Network failure — localStorage cache shown above will be used instead
             console.warn('Failed to load from DB, using localStorage cache:', err);
           }
         }
@@ -114,14 +119,18 @@ export function useChatHistory() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // Persist to localStorage + debounced DB sync on every change
+  // Write-through cache: localStorage is updated synchronously for instant reads on the
+  // next page load, while the DB (the authoritative source of truth) is updated via a
+  // 500 ms debounce so rapid consecutive state changes collapse into a single network
+  // request. syncTimeoutRef ensures only the latest write wins — no race conditions.
   useEffect(() => {
     if (isLoading) return;
     if (conversations.length === 0) return;
 
+    // localStorage acts as a fast local cache — never store passwords or tokens here
     localStorage.setItem(storageKey(userId), JSON.stringify(conversations));
 
-    // Sync to DB for signed-in users (works in dev and production)
+    // Only persist to DB when there is a confirmed signed-in user
     if (!isSignedIn || !userId) return;
 
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);

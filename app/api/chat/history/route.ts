@@ -2,39 +2,54 @@ import { neon } from '@neondatabase/serverless';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
-const sql = neon(process.env.DATABASE_URL!);
-
-async function migrate() {
-  await sql`
-    CREATE TABLE IF NOT EXISTS chat_history (
-      id              SERIAL PRIMARY KEY,
-      user_id         TEXT        NOT NULL,
-      conversation_id TEXT        NOT NULL,
-      name            TEXT        NOT NULL DEFAULT 'New Chat',
-      messages        JSONB       NOT NULL DEFAULT '[]',
-      created_at      TIMESTAMPTZ DEFAULT NOW(),
-      updated_at      TIMESTAMPTZ DEFAULT NOW()
-    )
-  `;
-  await sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS chat_history_user_conv_idx
-      ON chat_history(user_id, conversation_id)
-  `;
-  await sql`
-    CREATE INDEX IF NOT EXISTS chat_history_user_updated_idx
-      ON chat_history(user_id, updated_at DESC)
-  `;
+if (!process.env.DATABASE_URL) {
+  throw new Error('DATABASE_URL environment variable is not set');
 }
 
-// GET — purge data older than 5 days, then return this user's conversations
+const sql = neon(process.env.DATABASE_URL);
+
+// Run once per server process (cold start), not on every request.
+// Subsequent calls reuse the resolved promise — no extra DB round trips.
+let migrationPromise: Promise<void> | null = null;
+
+function ensureMigrated(): Promise<void> {
+  if (!migrationPromise) {
+    migrationPromise = (async () => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS chat_history (
+          id              SERIAL PRIMARY KEY,
+          user_id         TEXT        NOT NULL,
+          conversation_id TEXT        NOT NULL,
+          name            TEXT        NOT NULL DEFAULT 'New Chat',
+          messages        JSONB       NOT NULL DEFAULT '[]',
+          created_at      TIMESTAMPTZ DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ DEFAULT NOW()
+        )
+      `;
+      // Unique index: enforces one row per (user, conversation) and speeds up upserts
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS chat_history_user_conv_idx
+          ON chat_history(user_id, conversation_id)
+      `;
+      // Covering index: makes the ORDER BY updated_at DESC in GET a fast index scan
+      await sql`
+        CREATE INDEX IF NOT EXISTS chat_history_user_updated_idx
+          ON chat_history(user_id, updated_at DESC)
+      `;
+    })();
+  }
+  return migrationPromise;
+}
+
+// GET — purge conversations older than 5 days, then return the rest for this user
 export async function GET() {
   try {
     const { userId } = await auth();
     if (!userId) return new Response('Unauthorized', { status: 401 });
 
-    await migrate();
+    await ensureMigrated();
 
-    // Cleanup: remove conversations not touched in the last 5 days
+    // Cleanup: any conversation not touched in the last 5 days is removed
     await sql`
       DELETE FROM chat_history
       WHERE user_id = ${userId}
@@ -43,18 +58,18 @@ export async function GET() {
 
     const rows = await sql`
       SELECT conversation_id, name, messages, created_at, updated_at
-      FROM chat_history
-      WHERE user_id = ${userId}
-      ORDER BY updated_at DESC
+      FROM   chat_history
+      WHERE  user_id = ${userId}
+      ORDER  BY updated_at DESC
     `;
 
-    // Re-shape rows back into the Conversation objects the hook expects
+    // Map DB snake_case columns → TypeScript camelCase Conversation shape
     const conversations = rows.map(row => ({
-      id: row.conversation_id as string,
-      name: row.name as string,
-      messages: row.messages as object[],
+      id:        row.conversation_id as string,
+      name:      row.name            as string,
+      messages:  row.messages        as object[],
       createdAt: new Date(row.created_at as string).getTime(),
-      // expiresAt mirrors the server rule: updated_at + 5 days
+      // expiresAt mirrors the server rule so the client cache stays consistent
       expiresAt: new Date(row.updated_at as string).getTime() + 5 * 24 * 60 * 60 * 1000,
     }));
 
@@ -65,28 +80,33 @@ export async function GET() {
   }
 }
 
-// POST — upsert all conversations for this user (debounced batch from the hook)
+// POST — upsert all conversations for this user (sent as a debounced batch from the hook)
 export async function POST(request: NextRequest) {
   try {
     const { userId } = await auth();
     if (!userId) return new Response('Unauthorized', { status: 401 });
 
-    const conversations = await request.json();
-    if (!Array.isArray(conversations)) {
-      return NextResponse.json({ error: 'Expected an array' }, { status: 400 });
+    const body = await request.json();
+    if (!Array.isArray(body)) {
+      return NextResponse.json({ error: 'Request body must be an array of conversations' }, { status: 400 });
     }
 
-    await migrate();
+    await ensureMigrated();
 
-    for (const conv of conversations) {
-      if (!conv.id || typeof conv.id !== 'string') continue;
+    // Upsert each conversation; only rows that actually changed get a new updated_at
+    for (const conversation of body) {
+      if (!conversation.id || typeof conversation.id !== 'string') continue;
+
+      const conversationName     = typeof conversation.name === 'string' ? conversation.name : 'New Chat';
+      const conversationMessages = Array.isArray(conversation.messages) ? conversation.messages : [];
+
       await sql`
         INSERT INTO chat_history (user_id, conversation_id, name, messages)
         VALUES (
           ${userId},
-          ${conv.id},
-          ${conv.name ?? 'New Chat'},
-          ${JSON.stringify(conv.messages ?? [])}
+          ${conversation.id},
+          ${conversationName},
+          ${JSON.stringify(conversationMessages)}
         )
         ON CONFLICT (user_id, conversation_id) DO UPDATE
           SET name       = EXCLUDED.name,
@@ -102,20 +122,20 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// DELETE — remove a single conversation by id
+// DELETE — remove a single conversation immediately (called directly from deleteConversation)
 export async function DELETE(request: NextRequest) {
   try {
     const { userId } = await auth();
     if (!userId) return new Response('Unauthorized', { status: 401 });
 
     const conversationId = new URL(request.url).searchParams.get('id');
-    if (!conversationId) {
-      return NextResponse.json({ error: 'Missing conversation id' }, { status: 400 });
+    if (!conversationId || typeof conversationId !== 'string' || conversationId.trim() === '') {
+      return NextResponse.json({ error: 'Missing or invalid conversation id' }, { status: 400 });
     }
 
     await sql`
       DELETE FROM chat_history
-      WHERE user_id       = ${userId}
+      WHERE user_id        = ${userId}
         AND conversation_id = ${conversationId}
     `;
 
