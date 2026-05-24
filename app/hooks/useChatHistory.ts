@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useUser } from '@clerk/nextjs';
 
 export type Message = {
@@ -24,6 +24,7 @@ export function useChatHistory() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const syncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const loadFromStorage = async () => {
@@ -43,13 +44,14 @@ export function useChatHistory() {
           setConversations(valid);
 
           // Only sync with Redis when signed in
-          if (isSignedIn && valid.length > 0 && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
+          if (isSignedIn && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
             try {
               const syncResponse = await fetch('/api/chat/history?sync=true');
               if (syncResponse.ok) {
                 const data = await syncResponse.json();
-                if (data.conversations && Array.isArray(data.conversations)) {
+                if (Array.isArray(data.conversations) && data.conversations.length > 0) {
                   setConversations(data.conversations);
+                  localStorage.setItem(STORAGE_KEY, JSON.stringify(data.conversations));
                 }
               }
             } catch (err) {
@@ -91,19 +93,21 @@ export function useChatHistory() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSignedIn]);
 
-  // Save to localStorage and optionally sync to Redis when signed in
+  // Save to localStorage and optionally sync to Redis (debounced to avoid races)
   useEffect(() => {
-    if (conversations.length > 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
+    if (conversations.length === 0) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
 
-      if (isSignedIn && process.env.NEXT_PUBLIC_VERCEL_ENV === 'production') {
-        fetch('/api/chat/history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(conversations),
-        }).catch(err => console.warn('Failed to sync to Redis:', err));
-      }
-    }
+    if (!isSignedIn || process.env.NEXT_PUBLIC_VERCEL_ENV !== 'production') return;
+
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(() => {
+      fetch('/api/chat/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(conversations),
+      }).catch(err => console.warn('Failed to sync to Redis:', err));
+    }, 500);
   }, [conversations, isSignedIn]);
 
   useEffect(() => {

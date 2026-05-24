@@ -1,16 +1,17 @@
-// app/page.tsx
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { UserButton, useUser } from '@clerk/nextjs';
+import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport, isTextUIPart } from 'ai';
+import type { TextUIPart, UIMessage } from 'ai';
 import { useChatHistory, type Conversation } from '@/app/hooks/useChatHistory';
 
 function ThinkingIndicator() {
   return (
     <div className="flex justify-start animate-message-in">
       <div className="flex items-start gap-3 max-w-[80%]">
-        {/* Avatar */}
         <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-muted flex items-center justify-center mt-1">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
             <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z" />
@@ -19,7 +20,6 @@ function ThinkingIndicator() {
             <circle cx="12" cy="22" r="1" />
           </svg>
         </div>
-        {/* Bubble */}
         <div className="rounded-2xl rounded-tl-sm px-5 py-4 bg-surface-2 border border-border">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-xs font-medium text-accent">AI Assistant</span>
@@ -68,7 +68,6 @@ function ConversationSidebar({
 
   return (
     <div className="w-64 bg-surface border-r border-border flex flex-col overflow-hidden">
-      {/* New Chat Button */}
       <div className="p-4 border-b border-border">
         <button
           onClick={onCreateNew}
@@ -78,7 +77,6 @@ function ConversationSidebar({
         </button>
       </div>
 
-      {/* Conversations List */}
       <div className="flex-1 overflow-y-auto">
         {conversations.length === 0 ? (
           <div className="p-4 text-center text-muted text-sm">
@@ -163,6 +161,13 @@ function ConversationSidebar({
   );
 }
 
+function getTextFromMessage(message: UIMessage): string {
+  return message.parts
+    .filter((p): p is TextUIPart => isTextUIPart(p))
+    .map(p => p.text)
+    .join('');
+}
+
 export default function Chat() {
   const { user } = useUser();
   const isAdmin = (user?.publicMetadata as { role?: string } | null)?.role === 'admin';
@@ -170,16 +175,52 @@ export default function Chat() {
   const { conversations, activeConversation, isLoading, activeConversationId } = chatHistory;
   const [input, setInput] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark'>('dark');
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [streamingResponse, setStreamingResponse] = useState('');
+  const [chatError, setChatError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const isLoading_old = isStreaming;
-  const isThinking = isStreaming;
+  const { messages, sendMessage, stop, status, setMessages, error, clearError } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/chat',
+      prepareSendMessagesRequest: ({ messages: uiMessages }) => ({
+        body: {
+          messages: uiMessages
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .map(m => ({
+              role: m.role as 'user' | 'assistant',
+              content: getTextFromMessage(m),
+            }))
+            .filter(m => m.content.length > 0),
+        },
+      }),
+    }),
+    onFinish: ({ message }) => {
+      const text = getTextFromMessage(message);
+      if (text) {
+        chatHistory.addMessage('assistant', text);
+      }
+    },
+    onError: (err) => {
+      console.error('Chat error:', err);
+      setChatError(err.message || 'An error occurred. Please try again.');
+    },
+  });
 
-  const statusMessage = isStreaming
-    ? 'Receiving response from Llama 3.1...'
-    : 'Ready to chat';
+  const isStreaming = status === 'streaming' || status === 'submitted';
+
+  // Sync useChat messages when switching conversations (or after initial load)
+  useEffect(() => {
+    if (isLoading) return;
+    const stored = activeConversation?.messages ?? [];
+    setMessages(
+      stored.map(m => ({
+        id: m.id,
+        role: m.role,
+        parts: [{ type: 'text' as const, text: m.content }],
+        metadata: undefined,
+      }))
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversationId, isLoading]);
 
   useEffect(() => {
     const preferredTheme = window.localStorage.getItem('theme');
@@ -196,78 +237,41 @@ export default function Chat() {
     window.localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeConversation?.messages, streamingResponse, isStreaming]);
+  }, [messages, isStreaming]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isStreaming || !activeConversation) return;
+  // Propagate useChat error to local banner
+  useEffect(() => {
+    if (error) {
+      const msg = error.message || 'Something went wrong. Please try again.';
+      setChatError(msg.includes('429') ? 'Too many requests — please wait a moment.' : msg);
+    }
+  }, [error]);
 
-    const userMessage = input;
-    setInput('');
-    
-    // Add user message to history
-    chatHistory.addMessage('user', userMessage);
+  const handleSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!input.trim() || isStreaming || !activeConversation) return;
+      const userMessage = input.trim();
+      setInput('');
+      setChatError(null);
+      clearError();
+      chatHistory.addMessage('user', userMessage);
+      sendMessage({ text: userMessage });
+    },
+    [input, isStreaming, activeConversation, chatHistory, sendMessage, clearError]
+  );
 
-    setIsStreaming(true);
-    setStreamingResponse('');
-
-    try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          messages: [
-            ...activeConversation.messages.map(m => ({
-              role: m.role,
-              content: m.content,
-            })),
-            {
-              role: 'user',
-              content: userMessage,
-            },
-          ],
-        }),
-      });
-
-      if (!response.ok) {
-        if (response.status === 429) throw new Error('Too many requests — please wait a moment.');
-        const errText = await response.text();
-        let errMsg = 'Failed to get response';
-        try { errMsg = JSON.parse(errText).error || errMsg; } catch { errMsg = errText || errMsg; }
-        throw new Error(errMsg);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let fullResponse = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value, { stream: true });
-        fullResponse += chunk;
-        setStreamingResponse(fullResponse);
-      }
-
-      // Add AI response to history
-      chatHistory.addMessage('assistant', fullResponse);
-      setStreamingResponse('');
-    } catch (error) {
-      console.error('Error sending message:', error);
-      const errorMessage = `Error: ${error instanceof Error ? error.message : 'Unknown error'}`;
-      chatHistory.addMessage('assistant', errorMessage);
-    } finally {
-      setIsStreaming(false);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      handleSubmit(e as unknown as React.FormEvent);
     }
   };
+
+  const statusMessage = isStreaming
+    ? 'Receiving response from Llama 3.1...'
+    : 'Ready to chat';
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -353,11 +357,24 @@ export default function Chat() {
           </div>
         </header>
 
+        {/* Error banner */}
+        {chatError && (
+          <div className="px-6 py-3 bg-red-500/10 border-b border-red-500/20 flex items-center justify-between">
+            <p className="text-sm text-red-500">{chatError}</p>
+            <button
+              onClick={() => { setChatError(null); clearError(); }}
+              className="text-xs text-red-400 hover:text-red-300 ml-4 transition"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Messages Area */}
         <main className="flex-1 overflow-y-auto px-4 py-6">
           <div className="max-w-4xl mx-auto space-y-5">
             {/* Empty state */}
-            {(!activeConversation || activeConversation.messages.length === 0) && !isStreaming && (
+            {messages.length === 0 && !isStreaming && (
               <div className="flex flex-col items-center justify-center h-[60vh] text-center">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent to-purple-500 flex items-center justify-center mb-6 shadow-xl shadow-accent/20">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round">
@@ -370,73 +387,53 @@ export default function Chat() {
             )}
 
             {/* Messages */}
-            {activeConversation?.messages.map(m => (
-              <div
-                key={m.id}
-                className={`flex animate-message-in ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
-              >
-                {m.role === 'user' ? (
-                  /* User message */
-                  <div className="max-w-[75%] rounded-2xl rounded-tr-sm px-5 py-3.5 text-white shadow-lg shadow-accent/10"
-                    style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
-                  >
-                    <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {m.content}
-                    </div>
-                  </div>
-                ) : (
-                  /* AI message */
-                  <div className="flex items-start gap-3 max-w-[80%]">
-                    {/* Avatar */}
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-muted flex items-center justify-center mt-1">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
-                        <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z" />
-                        <path d="M12 12v8" />
-                        <path d="M8 16h8" />
-                        <circle cx="12" cy="22" r="1" />
-                      </svg>
-                    </div>
-                    {/* Bubble */}
-                    <div className="rounded-2xl rounded-tl-sm px-5 py-4 bg-surface-2 border border-border">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-xs font-medium text-accent">AI Assistant</span>
-                      </div>
-                      <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                        {m.content}
+            {messages.map((m, idx) => {
+              const text = getTextFromMessage(m);
+              const isLastAssistant = m.role === 'assistant' && idx === messages.length - 1;
+              const showCursor = isLastAssistant && status === 'streaming';
+
+              return (
+                <div
+                  key={m.id}
+                  className={`flex animate-message-in ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  {m.role === 'user' ? (
+                    <div className="max-w-[75%] rounded-2xl rounded-tr-sm px-5 py-3.5 text-white shadow-lg shadow-accent/10"
+                      style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6)' }}
+                    >
+                      <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                        {text}
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            ))}
-
-            {/* Streaming response */}
-            {isStreaming && streamingResponse && (
-              <div className="flex items-start gap-3 max-w-[80%]">
-                {/* Avatar */}
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-muted flex items-center justify-center mt-1">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
-                    <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z" />
-                    <path d="M12 12v8" />
-                    <path d="M8 16h8" />
-                    <circle cx="12" cy="22" r="1" />
-                  </svg>
+                  ) : (
+                    <div className="flex items-start gap-3 max-w-[80%]">
+                      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-accent-muted flex items-center justify-center mt-1">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
+                          <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z" />
+                          <path d="M12 12v8" />
+                          <path d="M8 16h8" />
+                          <circle cx="12" cy="22" r="1" />
+                        </svg>
+                      </div>
+                      <div className="rounded-2xl rounded-tl-sm px-5 py-4 bg-surface-2 border border-border">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-medium text-accent">AI Assistant</span>
+                        </div>
+                        <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+                          {text}
+                          {showCursor && (
+                            <span className="inline-block w-1.5 h-5 ml-0.5 bg-accent/50 animate-pulse" />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-                {/* Bubble */}
-                <div className="rounded-2xl rounded-tl-sm px-5 py-4 bg-surface-2 border border-border">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-medium text-accent">AI Assistant</span>
-                  </div>
-                  <div className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
-                    {streamingResponse}
-                    <span className="inline-block w-1.5 h-5 ml-0.5 bg-accent/50 animate-pulse"></span>
-                  </div>
-                </div>
-              </div>
-            )}
+              );
+            })}
 
-            {/* Thinking indicator */}
-            {isStreaming && !streamingResponse && <ThinkingIndicator />}
+            {/* Thinking indicator — shown while waiting for first token */}
+            {status === 'submitted' && <ThinkingIndicator />}
 
             <div ref={messagesEndRef} />
           </div>
@@ -460,24 +457,40 @@ export default function Chat() {
                 value={input}
                 placeholder="Type your message..."
                 onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
                 disabled={isStreaming || isLoading}
                 autoComplete="off"
               />
             </div>
-            <button
-              id="send-button"
-              type="submit"
-              disabled={isStreaming || isLoading || !input.trim()}
-              className="flex-shrink-0 px-5 py-3.5 bg-gradient-to-r from-accent to-purple-500 text-white rounded-xl font-medium text-sm disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-accent/25 active:scale-[0.97] transition-all duration-200 cursor-pointer"
-            >
-              <div className="flex items-center gap-2">
-                <span>Send</span>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13" />
-                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
-                </svg>
-              </div>
-            </button>
+            {status === 'streaming' ? (
+              <button
+                type="button"
+                onClick={() => stop()}
+                className="flex-shrink-0 px-5 py-3.5 bg-red-500/80 hover:bg-red-500 text-white rounded-xl font-medium text-sm transition-all duration-200"
+              >
+                <div className="flex items-center gap-2">
+                  <span>Stop</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="4" y="4" width="16" height="16" rx="2" />
+                  </svg>
+                </div>
+              </button>
+            ) : (
+              <button
+                id="send-button"
+                type="submit"
+                disabled={isStreaming || isLoading || !input.trim()}
+                className="flex-shrink-0 px-5 py-3.5 bg-gradient-to-r from-accent to-purple-500 text-white rounded-xl font-medium text-sm disabled:opacity-30 disabled:cursor-not-allowed hover:shadow-lg hover:shadow-accent/25 active:scale-[0.97] transition-all duration-200 cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  <span>Send</span>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="22" y1="2" x2="11" y2="13" />
+                    <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                  </svg>
+                </div>
+              </button>
+            )}
           </form>
         </footer>
       </div>

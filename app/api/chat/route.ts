@@ -1,5 +1,6 @@
+// api/chat/route.ts
 import { createOpenAI } from '@ai-sdk/openai';
-import { streamText } from 'ai';
+import { streamText, type ModelMessage } from 'ai';
 import { neon } from '@neondatabase/serverless';
 import { auth } from '@clerk/nextjs/server';
 import { Ratelimit } from '@upstash/ratelimit';
@@ -18,6 +19,8 @@ const EMBED_MODEL = 'nvidia/nv-embedqa-e5-v5';
 
 export const maxDuration = 60;
 
+const MAX_CONTEXT_MESSAGES = 20;
+
 const messageSchema = z.object({
   role: z.enum(['user', 'assistant']),
   content: z.string().min(1).max(10_000),
@@ -26,6 +29,11 @@ const messageSchema = z.object({
 const requestSchema = z.object({
   messages: z.array(messageSchema).min(1).max(100),
 });
+
+function truncateMessages(msgs: ModelMessage[]): ModelMessage[] {
+  if (msgs.length <= MAX_CONTEXT_MESSAGES) return msgs;
+  return msgs.slice(-MAX_CONTEXT_MESSAGES);
+}
 
 let ratelimit: Ratelimit | null = null;
 
@@ -125,12 +133,12 @@ export async function POST(req: Request) {
 
     const result = await streamText({
       model: nvidia.chat('meta/llama-3.1-8b-instruct'),
-      messages,
+      messages: truncateMessages(messages as ModelMessage[]),
       system: systemPrompt,
       temperature: 0.7,
     });
 
-    return result.toTextStreamResponse();
+    return result.toUIMessageStreamResponse();
   } catch (error) {
     console.error('Chat API error:', error);
     return new Response(
